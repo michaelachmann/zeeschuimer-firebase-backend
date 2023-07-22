@@ -1,0 +1,10 @@
+{
+  "name": "zeeschuimer-ig-loader",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "Michael Achmann",
+  "license": "MIT",
+  "dependencies": {
+    "firebase": "^10.1.0"
+  }
+}
