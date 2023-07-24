@@ -5,6 +5,8 @@
   "author": "Michael Achmann",
   "license": "MIT",
   "dependencies": {
-    "firebase": "^10.1.0"
+    "@google-cloud/storage": "^6.12.0",
+    "busboy": "^1.6.0",
+    "firebase": "^8.6.8"
   }
 }

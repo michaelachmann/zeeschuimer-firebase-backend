@@ -1,12 +1,13 @@
 const {onRequest} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const axios = require("axios");
-
-
 const admin = require("firebase-admin");
-admin.initializeApp();
-
+const {getStorage} = require("firebase-admin/storage");
 const express = require("express");
+
+// Initialize Firebase Admin SDK
+admin.initializeApp();
+// const storage = new Storage();
 const app = express();
 
 // Using hardcoded API key for simplicity
@@ -25,7 +26,7 @@ const apiKeyMiddleware = (req, res, next) => {
 // Apply authentication middleware to all routes
 app.use(apiKeyMiddleware);
 
-// build multiple CRUD interfaces:
+// Add a story to Firestore
 app.post("/add", (req, res) => (createStory(req, res)));
 
 function createStory(req, res) {
@@ -37,8 +38,6 @@ function createStory(req, res) {
       .collection("stories") // Replace 'myData' with your collection name
       .add(data)
       .then((docRef) => {
-        console.log("Document written with ID: ", docRef.id);
-        downloadImage(data.id, data.image_versions2.candidates[0].url);
         res.status(200).send("Data saved successfully");
       })
       .catch((error) => {
@@ -49,9 +48,9 @@ function createStory(req, res) {
 
 function downloadImage(event) {
   // Create a reference to the Firebase Storage bucket
-  const bucket = admin.storage().bucket();
-  const story = event.data.after.data();
-  const storyId = story.id;
+  const bucket = getStorage().bucket("gs://zeeschuimer-ig-loader.appspot.com");
+  const story = event.data.data();
+  console.log(story);
   const imageUrl = story.image_versions2.candidates[0].url;
 
   console.log("Downloading image for story:", imageUrl);
@@ -60,7 +59,7 @@ function downloadImage(event) {
   const fileExtension = "jpeg";
 
   // Set the destination file name with the proper file extension
-  const destinationFileName = `stories/${storyId}.${fileExtension}`;
+  const destinationFileName = `stories/${story.id}.${fileExtension}`;
 
   console.log(destinationFileName);
   console.log(imageUrl);
@@ -93,6 +92,5 @@ function downloadImage(event) {
 // Function to download image for a story
 exports.downloadImage = onDocumentCreated("stories/{storyId}",
     (event) => downloadImage(event));
-
 // Expose Express API as a single Cloud Function:
 exports.stories = onRequest(app);
