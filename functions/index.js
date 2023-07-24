@@ -1,6 +1,7 @@
 const {onRequest} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
-const uuid = require("uuid");
+const axios = require("axios");
+
 
 const admin = require("firebase-admin");
 admin.initializeApp();
@@ -27,9 +28,6 @@ app.use(apiKeyMiddleware);
 // build multiple CRUD interfaces:
 app.post("/add", (req, res) => (createStory(req, res)));
 
-// build multiple CRUD interfaces:
-app.post("/image", (req, res) => (downloadDummy(req, res)));
-
 function createStory(req, res) {
   const data = req.body; // POST data received
 
@@ -49,9 +47,14 @@ function createStory(req, res) {
       });
 }
 
-function downloadImage(storyId, imageUrl) {
+function downloadImage(event) {
   // Create a reference to the Firebase Storage bucket
   const bucket = admin.storage().bucket();
+  const story = event.data.after.data();
+  const storyId = story.id;
+  const imageUrl = story.image_versions2.candidates[0].url;
+
+  console.log("Downloading image for story:", imageUrl);
 
   // Extract the file extension from the imageUrl
   const fileExtension = "jpeg";
@@ -62,21 +65,34 @@ function downloadImage(storyId, imageUrl) {
   console.log(destinationFileName);
   console.log(imageUrl);
   console.log(bucket);
+
+  // Download the image and save it to the Firebase Storage bucket
+  return axios
+      .get(imageUrl, {responseType: "arraybuffer"})
+      .then((response) => {
+        const imageBuffer = Buffer.from(response.data, "binary");
+        const file = bucket.file(destinationFileName);
+        file.save(imageBuffer, {
+          contentType: `image/${fileExtension}`,
+        })
+            .then(() => {
+              console.log("Image downloaded and saved to Firebase Storage:",
+                  destinationFileName);
+            })
+            .catch((error) => {
+              console.error("Error saving the image to Firebase Storage:",
+                  error);
+            });
+      })
+      .catch((error) => {
+        console.error("Error downloading the image:", error);
+      });
 }
 
-function downloadDummy(req, res) {
-  const id = uuid.v4();
-  downloadImage(id, "https://placehold.co/600x400/EEE/31343C");
-  res.status(200).send("Data saved successfully");
-}
-
-function documentAddedTrigger(event) {
-  console.log("Document created:", event.params.storyId);
-}
 
 // Function to download image for a story
 exports.downloadImage = onDocumentCreated("stories/{storyId}",
-    (event) => documentAddedTrigger(event));
+    (event) => downloadImage(event));
 
 // Expose Express API as a single Cloud Function:
 exports.stories = onRequest(app);
