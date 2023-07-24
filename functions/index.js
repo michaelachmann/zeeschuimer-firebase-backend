@@ -32,11 +32,28 @@ app.post("/add", (req, res) => (createStory(req, res)));
 function createStory(req, res) {
   const data = req.body; // POST data received
 
+  // Check if entry already exists
+  // admin
+  //     .firestore()
+  //     .collection("stories")
+  //     .doc(data.id)
+  //     .get()
+  //     .then((doc) => {
+  //       if (doc.exists) {
+  //         console.log("Document already exists:", doc.id);
+  //         return res.status(400).send("Document already exists");
+  //       } else {
+  //         console.log("Document does not exist:", doc.id);
+  //         return saveStory(data, res);
+  //       }
+  //     })
+
   // Save the data to Firestore
   admin
       .firestore()
       .collection("stories") // Replace 'myData' with your collection name
-      .add(data)
+      .doc(data.id)
+      .set(data)
       .then((docRef) => {
         res.status(200).send("Data saved successfully");
       })
@@ -50,7 +67,6 @@ function downloadImage(event) {
   // Create a reference to the Firebase Storage bucket
   const bucket = getStorage().bucket("gs://zeeschuimer-ig-loader.appspot.com");
   const story = event.data.data();
-  console.log(story);
   const imageUrl = story.image_versions2.candidates[0].url;
 
   console.log("Downloading image for story:", imageUrl);
@@ -59,11 +75,8 @@ function downloadImage(event) {
   const fileExtension = "jpeg";
 
   // Set the destination file name with the proper file extension
-  const destinationFileName = `stories/${story.id}.${fileExtension}`;
-
-  console.log(destinationFileName);
-  console.log(imageUrl);
-  console.log(bucket);
+  const destinationFileName =
+  `stories/images/${story.user.username}/${story.id}.${fileExtension}`;
 
   // Download the image and save it to the Firebase Storage bucket
   return axios
@@ -89,8 +102,62 @@ function downloadImage(event) {
 }
 
 
+function downloadVideo(event) {
+  // Create a reference to the Firebase Storage bucket
+  const bucket = getStorage().bucket("gs://zeeschuimer-ig-loader.appspot.com");
+  const story = event.data.data();
+
+  // Check for video_versions in the story object
+  if (!Object.hasOwn(story, "video_versions")) {
+    return;
+  }
+
+  const videoURL = story.video_versions[0].url;
+
+  console.log("Downloading video for story:", videoURL);
+
+  // Extract the file extension from the imageUrl
+  const fileExtension = "mp4";
+
+  // Set the destination file name with the proper file extension
+  const destinationFileName =
+    `stories/videos/${story.user.username}/${story.id}.${fileExtension}`;
+
+  return axios({
+    url: videoURL,
+    method: "GET",
+    responseType: "stream",
+  })
+      .then((response) => {
+        const file = bucket.file(destinationFileName);
+        response.data.pipe(
+            file.createWriteStream({
+              metadata: {
+                contentType: `video/${fileExtension}`,
+              },
+            })
+        )
+            .on("finish", () => {
+              console.log("Image downloaded and saved to Firebase Storage:",
+                  destinationFileName);
+            })
+            .on("error", (error) => {
+              console.error("Error saving the image to Firebase Storage:",
+                  error);
+            });
+      })
+      .catch((error) => {
+        console.error("Error downloading the image:", error);
+      });
+}
+
+
 // Function to download image for a story
 exports.downloadImage = onDocumentCreated("stories/{storyId}",
     (event) => downloadImage(event));
+
+// Function to download video for a story
+exports.downloadVideo = onDocumentCreated("stories/{storyId}",
+    (event) => downloadVideo(event));
 // Expose Express API as a single Cloud Function:
-exports.stories = onRequest(app);
+exports.story = onRequest(app);
