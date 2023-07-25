@@ -1,5 +1,7 @@
 const {onRequest} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
+const {setGlobalOptions} = require("firebase-functions/v2");
+
 const axios = require("axios");
 const admin = require("firebase-admin");
 const {getStorage} = require("firebase-admin/storage");
@@ -32,26 +34,10 @@ app.post("/add", (req, res) => (createStory(req, res)));
 function createStory(req, res) {
   const data = req.body; // POST data received
 
-  // Check if entry already exists
-  // admin
-  //     .firestore()
-  //     .collection("stories")
-  //     .doc(data.id)
-  //     .get()
-  //     .then((doc) => {
-  //       if (doc.exists) {
-  //         console.log("Document already exists:", doc.id);
-  //         return res.status(400).send("Document already exists");
-  //       } else {
-  //         console.log("Document does not exist:", doc.id);
-  //         return saveStory(data, res);
-  //       }
-  //     })
-
   // Save the data to Firestore
   admin
       .firestore()
-      .collection("stories") // Replace 'myData' with your collection name
+      .collection("stories")
       .doc(data.id)
       .set(data)
       .then((docRef) => {
@@ -101,6 +87,26 @@ function downloadImage(event) {
       });
 }
 
+function addVideoErrorToQueue(storyId, videoURL, errorMessage) {
+  const db = admin.firestore();
+  const videoQueueRef = db.collection("video_queue");
+
+  const videoQueueData = {
+    storyId: storyId,
+    videoURL: videoURL,
+    status: "error",
+    errorMessage: errorMessage,
+    datetime: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  return videoQueueRef.add(videoQueueData)
+      .then((docRef) => {
+        console.log("Error entry added to video_queue collection with ID:", docRef.id);
+      })
+      .catch((error) => {
+        console.error("Error adding document to video_queue collection:", error);
+      });
+}
 
 function downloadVideo(event) {
   // Create a reference to the Firebase Storage bucket
@@ -138,18 +144,24 @@ function downloadVideo(event) {
             })
         )
             .on("finish", () => {
-              console.log("Image downloaded and saved to Firebase Storage:",
-                  destinationFileName);
+              console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
             })
             .on("error", (error) => {
-              console.error("Error saving the image to Firebase Storage:",
-                  error);
+              const errorMessage = "Error saving the video to Firebase Storage: " + error;
+              console.error(errorMessage);
+              addVideoErrorToQueue(story.id, videoURL, errorMessage);
             });
       })
       .catch((error) => {
-        console.error("Error downloading the image:", error);
+        const errorMessage = "Error downloading the video: " + error;
+        console.error(errorMessage);
+        addVideoErrorToQueue(story.id, videoURL, errorMessage);
       });
 }
+
+
+// locate all functions closest to users
+setGlobalOptions({region: "europe-west1"});
 
 
 // Function to download image for a story
@@ -157,7 +169,11 @@ exports.downloadImage = onDocumentCreated("stories/{storyId}",
     (event) => downloadImage(event));
 
 // Function to download video for a story
-exports.downloadVideo = onDocumentCreated("stories/{storyId}",
-    (event) => downloadVideo(event));
+exports.downloadVideo = onDocumentCreated({
+  document: "stories/{storyId}",
+  memory: "512MiB",
+},
+(event) => downloadVideo(event));
+
 // Expose Express API as a single Cloud Function:
 exports.story = onRequest(app);
