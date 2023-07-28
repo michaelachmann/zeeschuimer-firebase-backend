@@ -2,6 +2,7 @@ const {onRequest} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
 
+const dotenv = require("dotenv");
 const axios = require("axios");
 const admin = require("firebase-admin");
 const {getStorage} = require("firebase-admin/storage");
@@ -9,16 +10,21 @@ const express = require("express");
 
 // Initialize Firebase Admin SDK
 admin.initializeApp();
+
 // const storage = new Storage();
 const app = express();
+
+// Load environment variables from .env file
+dotenv.config();
 
 // Using hardcoded API key for simplicity
 // Authentication Middleware
 const apiKeyMiddleware = (req, res, next) => {
   const apiKey = req.header("x-api-key");
+  const validApiKey = process.env.API_KEY;
 
   // Replace 'YOUR_API_KEY' with the actual API key generated earlier
-  if (!apiKey || apiKey !== "f6882379-38c0-4356-a612-093b1e2926de") {
+  if (!apiKey || apiKey !== validApiKey) {
     return res.status(401).json({error: "Unauthorized"});
   }
 
@@ -96,6 +102,7 @@ function addVideoErrorToQueue(storyId, videoURL, errorMessage) {
     videoURL: videoURL,
     status: "error",
     errorMessage: errorMessage,
+    retries: 0,
     datetime: admin.firestore.FieldValue.serverTimestamp(),
   };
 
@@ -149,13 +156,13 @@ function downloadVideo(event) {
             .on("error", (error) => {
               const errorMessage = "Error saving the video to Firebase Storage: " + error;
               console.error(errorMessage);
-              addVideoErrorToQueue(story.id, videoURL, errorMessage);
+              return addVideoErrorToQueue(story.id, videoURL, errorMessage);
             });
       })
       .catch((error) => {
         const errorMessage = "Error downloading the video: " + error;
         console.error(errorMessage);
-        addVideoErrorToQueue(story.id, videoURL, errorMessage);
+        return addVideoErrorToQueue(story.id, videoURL, errorMessage);
       });
 }
 
