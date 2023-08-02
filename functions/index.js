@@ -55,114 +55,161 @@ function createStory(req, res) {
       });
 }
 
+
+/**
+ * Downloads an image for a given story and saves it to Firebase Storage.
+ * The function first adds an entry to the image_queue collection with a status of "started."
+ * If the download is successful, the status is updated to "success."
+ * If the download fails, the status is updated to "error," and the error message is saved.
+ *
+ * @param {Object} event - The Firestore event containing the story data.
+ * @return {Promise} - A promise that resolves when the download is complete and the Firestore document is updated.
+ */
 function downloadImage(event) {
+  // Retrieve the bucket URL from the environment variables
+  const bucketUrl = process.env.BUCKET_URL;
+  if (!bucketUrl) {
+    console.error("Bucket URL is not defined in .env file");
+    return Promise.reject(new Error("Bucket URL is missing"));
+  }
+
   // Create a reference to the Firebase Storage bucket
-  const bucket = getStorage().bucket("gs://zeeschuimer-ig-loader.appspot.com");
+  const bucket = getStorage().bucket(bucketUrl);
+
+  // Retrieve the story data from the event
   const story = event.data.data();
   const imageUrl = story.image_versions2.candidates[0].url;
-
-  console.log("Downloading image for story:", imageUrl);
 
   // Extract the file extension from the imageUrl
   const fileExtension = "jpeg";
 
-  // Set the destination file name with the proper file extension
-  const destinationFileName =
-  `stories/images/${story.user.username}/${story.id}.${fileExtension}`;
+  // Set the destination file name in the bucket
+  const destinationFileName = `stories/images/${story.user.username}/${story.id}.${fileExtension}`;
 
-  // Download the image and save it to the Firebase Storage bucket
-  return axios
-      .get(imageUrl, {responseType: "arraybuffer"})
-      .then((response) => {
-        const imageBuffer = Buffer.from(response.data, "binary");
-        const file = bucket.file(destinationFileName);
-        file.save(imageBuffer, {
-          contentType: `image/${fileExtension}`,
-        })
-            .then(() => {
-              console.log("Image downloaded and saved to Firebase Storage:",
-                  destinationFileName);
-            })
-            .catch((error) => {
-              console.error("Error saving the image to Firebase Storage:",
-                  error);
-            });
-      })
-      .catch((error) => {
-        console.error("Error downloading the image:", error);
-      });
-}
-
-function addVideoErrorToQueue(storyId, videoURL, errorMessage) {
-  const db = admin.firestore();
-  const videoQueueRef = db.collection("video_queue");
-
-  const videoQueueData = {
-    storyId: storyId,
-    videoURL: videoURL,
-    status: "error",
-    errorMessage: errorMessage,
-    retries: 0,
+  // Create a queue entry with status "started" in the image_queue collection
+  const imageQueueData = {
+    storyId: story.id,
+    imageUrl: imageUrl,
+    status: "started",
     datetime: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  return videoQueueRef.add(videoQueueData)
+  const imageQueueRef = admin.firestore().collection("image_queue");
+
+  // Add the queue entry to Firestore and start the download
+  return imageQueueRef.add(imageQueueData)
       .then((docRef) => {
-        console.log("Error entry added to video_queue collection with ID:", docRef.id);
-      })
-      .catch((error) => {
-        console.error("Error adding document to video_queue collection:", error);
-      });
-}
+        console.log("Image download queued for story:", story.id);
 
-function downloadVideo(event) {
-  // Create a reference to the Firebase Storage bucket
-  const bucket = getStorage().bucket("gs://zeeschuimer-ig-loader.appspot.com");
-  const story = event.data.data();
+        // Use axios to download the image
+        return axios.get(imageUrl, {responseType: "arraybuffer"})
+            .then((response) => {
+              const imageBuffer = Buffer.from(response.data, "binary");
+              const file = bucket.file(destinationFileName);
 
-  // Check for video_versions in the story object
-  if (!Object.hasOwn(story, "video_versions")) {
-    return;
-  }
-
-  const videoURL = story.video_versions[0].url;
-
-  console.log("Downloading video for story:", videoURL);
-
-  // Extract the file extension from the imageUrl
-  const fileExtension = "mp4";
-
-  // Set the destination file name with the proper file extension
-  const destinationFileName =
-    `stories/videos/${story.user.username}/${story.id}.${fileExtension}`;
-
-  return axios({
-    url: videoURL,
-    method: "GET",
-    responseType: "stream",
-  })
-      .then((response) => {
-        const file = bucket.file(destinationFileName);
-        response.data.pipe(
-            file.createWriteStream({
-              metadata: {
-                contentType: `video/${fileExtension}`,
-              },
+              // Save the image to the bucket
+              return file.save(imageBuffer, {contentType: `image/${fileExtension}`})
+                  .then(() => {
+                    console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+                    // Update the queue entry with status "success"
+                    return docRef.update({status: "success"});
+                  })
+                  .catch((error) => {
+                    const errorMessage = "Error saving the image to Firebase Storage: " + error;
+                    console.error(errorMessage);
+                    // Update the queue entry with status "error" and the error message
+                    return docRef.update({status: "error", errorMessage: errorMessage});
+                  });
             })
-        )
-            .on("finish", () => {
-              console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
-            })
-            .on("error", (error) => {
-              const errorMessage = "Error saving the video to Firebase Storage: " + error;
+            .catch((error) => {
+              const errorMessage = "Error downloading the image: " + error;
               console.error(errorMessage);
-              return addVideoErrorToQueue(story.id, videoURL, errorMessage);
+              // Update the queue entry with status "error" and the error message
+              return docRef.update({status: "error", errorMessage: errorMessage});
             });
       })
       .catch((error) => {
-        const errorMessage = "Error downloading the video: " + error;
-        console.error(errorMessage);
-        return addVideoErrorToQueue(story.id, videoURL, errorMessage);
+        console.error("Error adding image to queue:", error);
+      });
+}
+
+
+/**
+ * Downloads a video for a given story and saves it to Firebase Storage.
+ * The function first adds an entry to the video_queue collection with a status of "started."
+ * If the download is successful, the status is updated to "success."
+ * If the download fails, the status is updated to "error," and the error message is saved.
+ *
+ * @param {Object} event - The Firestore event containing the story data.
+ * @return {Promise} - A promise that resolves when the download is complete and the Firestore document is updated.
+ */
+function downloadVideo(event) {
+  const bucketUrl = process.env.BUCKET_URL;
+  if (!bucketUrl) {
+    console.error("Bucket URL is not defined in .env file");
+    return Promise.reject(new Error("Bucket URL is missing"));
+  }
+
+  const bucket = getStorage().bucket(bucketUrl);
+  const story = event.data.data();
+
+  if (!Object.hasOwn(story, "video_versions")) {
+    return Promise.resolve(); // Return a resolved promise if there's nothing to do
+  }
+
+  const videoURL = story.video_versions[0].url;
+  const fileExtension = "mp4";
+  const destinationFileName = `stories/videos/${story.user.username}/${story.id}.${fileExtension}`;
+
+  const videoQueueData = {
+    storyId: story.id,
+    videoURL: videoURL,
+    status: "started",
+    datetime: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  const videoQueueRef = admin.firestore().collection("video_queue");
+
+  return videoQueueRef.add(videoQueueData)
+      .then((docRef) => {
+        console.log("Video download queued for story:", story.id);
+
+        return axios({
+          url: videoURL,
+          method: "GET",
+          responseType: "stream",
+        })
+            .then((response) => {
+              return new Promise((resolve, reject) => {
+                const file = bucket.file(destinationFileName);
+                const writeStream = file.createWriteStream({
+                  metadata: {
+                    contentType: `video/${fileExtension}`,
+                  },
+                });
+
+                response.data.pipe(writeStream);
+
+                writeStream.on("finish", () => {
+                  console.log("Video downloaded and saved to Firebase Storage:", destinationFileName);
+                  docRef.update({status: "success"}).then(resolve).catch(reject);
+                });
+
+                writeStream.on("error", (error) => {
+                  const errorMessage = "Error saving the video to Firebase Storage: " + error;
+                  console.error(errorMessage);
+                  docRef.update({status: "error", errorMessage: errorMessage}).then(reject).catch(reject);
+                });
+              });
+            })
+            .catch((error) => {
+              const errorMessage = "Error downloading the video: " + error;
+              console.error(errorMessage);
+              return docRef.update({status: "error", errorMessage: errorMessage});
+            });
+      })
+      .catch((error) => {
+        console.error("Error adding video to queue:", error);
       });
 }
 
@@ -184,3 +231,67 @@ exports.downloadVideo = onDocumentCreated({
 
 // Expose Express API as a single Cloud Function:
 exports.story = onRequest(app);
+
+// Downloading a video is a long-running task, so we need to use a background function
+exports.downloadVideoTask = onCall((data, context) => {
+  // Extract the video data from the input
+  const videoData = data.videoData;
+
+  // Call the existing downloadVideo function
+  return downloadVideo({data: {data: videoData}})
+    .then(() => {
+      // Update the status to "started" in the queue
+      return admin.firestore().collection("video_queue").doc(videoData.id)
+        .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
+    })
+    .catch((error) => {
+      console.error("Error retrying video download:", error);
+      // Handle the error as needed
+    });
+});
+
+exports.videoJanitor = onRun("every 5 minutes", () => {
+  const videoQueueRef = admin.firestore().collection("video_queue");
+
+  return videoQueueRef.where("status", "in", ["error", "started"])
+    .get()
+    .then((querySnapshot) => {
+      querySnapshot.forEach((doc) => {
+        const videoData = doc.data();
+        const status = videoData.status;
+        const datetime = videoData.datetime.toDate();
+        const elapsedTime = (new Date() - datetime) / 1000;
+
+        if (status === "error" || (status === "started" && elapsedTime > 120)) {
+          // Trigger the downloadVideoTask function without waiting for it to complete
+          admin.functions().httpsCallable('downloadVideoTask')({videoData: videoData})
+            .catch((error) => {
+              console.error("Error triggering video download function:", error);
+            });
+        }
+      });
+
+      // Return a resolved promise since we're not waiting for the download functions to complete
+      return Promise.resolve();
+    })
+    .catch((error) => {
+      console.error("Error querying video queue:", error);
+    });
+});
+
+exports.downloadImageTask = onCall((data, context) => {
+  // Extract the image data from the input
+  const imageData = data.imageData;
+
+  // Call the existing downloadImage function
+  return downloadImage({data: {data: imageData}})
+    .then(() => {
+      // Update the status to "started" in the queue
+      return admin.firestore().collection("image_queue").doc(imageData.id)
+        .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
+    })
+    .catch((error) => {
+      console.error("Error retrying image download:", error);
+      // Handle the error as needed
+    });
+});
