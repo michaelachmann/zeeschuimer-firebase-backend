@@ -1,6 +1,9 @@
 const {onRequest} = require("firebase-functions/v2/https");
+const {onCall} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
+
 
 const dotenv = require("dotenv");
 const axios = require("axios");
@@ -233,65 +236,48 @@ exports.downloadVideo = onDocumentCreated({
 exports.story = onRequest(app);
 
 // Downloading a video is a long-running task, so we need to use a background function
-exports.downloadVideoTask = onCall((data, context) => {
+exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
   // Extract the video data from the input
   const videoData = data.videoData;
 
   // Call the existing downloadVideo function
   return downloadVideo({data: {data: videoData}})
-    .then(() => {
+      .then(() => {
       // Update the status to "started" in the queue
-      return admin.firestore().collection("video_queue").doc(videoData.id)
-        .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
-    })
-    .catch((error) => {
-      console.error("Error retrying video download:", error);
+        return admin.firestore().collection("video_queue").doc(videoData.id)
+            .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
+      })
+      .catch((error) => {
+        console.error("Error retrying video download:", error);
       // Handle the error as needed
-    });
+      });
 });
 
-exports.videoJanitor = onRun("every 5 minutes", () => {
+exports.videoJanitor = onSchedule("every 5 minutes", (event) => {
   const videoQueueRef = admin.firestore().collection("video_queue");
 
   return videoQueueRef.where("status", "in", ["error", "started"])
-    .get()
-    .then((querySnapshot) => {
-      querySnapshot.forEach((doc) => {
-        const videoData = doc.data();
-        const status = videoData.status;
-        const datetime = videoData.datetime.toDate();
-        const elapsedTime = (new Date() - datetime) / 1000;
+      .get()
+      .then((querySnapshot) => {
+        querySnapshot.forEach((doc) => {
+          const videoData = doc.data();
+          const status = videoData.status;
+          const datetime = videoData.datetime.toDate();
+          const elapsedTime = (new Date() - datetime) / 1000;
 
-        if (status === "error" || (status === "started" && elapsedTime > 120)) {
+          if (status === "error" || (status === "started" && elapsedTime > 120)) {
           // Trigger the downloadVideoTask function without waiting for it to complete
-          admin.functions().httpsCallable('downloadVideoTask')({videoData: videoData})
-            .catch((error) => {
-              console.error("Error triggering video download function:", error);
-            });
-        }
+            admin.functions().httpsCallable("downloadVideoTask")({videoData: videoData})
+                .catch((error) => {
+                  console.error("Error triggering video download function:", error);
+                });
+          }
+        });
+
+        // Return a resolved promise since we're not waiting for the download functions to complete
+        return Promise.resolve();
+      })
+      .catch((error) => {
+        console.error("Error querying video queue:", error);
       });
-
-      // Return a resolved promise since we're not waiting for the download functions to complete
-      return Promise.resolve();
-    })
-    .catch((error) => {
-      console.error("Error querying video queue:", error);
-    });
-});
-
-exports.downloadImageTask = onCall((data, context) => {
-  // Extract the image data from the input
-  const imageData = data.imageData;
-
-  // Call the existing downloadImage function
-  return downloadImage({data: {data: imageData}})
-    .then(() => {
-      // Update the status to "started" in the queue
-      return admin.firestore().collection("image_queue").doc(imageData.id)
-        .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
-    })
-    .catch((error) => {
-      console.error("Error retrying image download:", error);
-      // Handle the error as needed
-    });
 });
