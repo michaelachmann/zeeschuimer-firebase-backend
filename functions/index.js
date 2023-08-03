@@ -20,6 +20,10 @@ const app = express();
 // Load environment variables from .env file
 dotenv.config();
 
+// locate all functions closest to users
+setGlobalOptions({region: "europe-west1"});
+
+
 // Using hardcoded API key for simplicity
 // Authentication Middleware
 const apiKeyMiddleware = (req, res, next) => {
@@ -217,9 +221,6 @@ function downloadVideo(event) {
 }
 
 
-// locate all functions closest to users
-setGlobalOptions({region: "europe-west1"});
-
 
 // Function to download image for a story
 exports.downloadImage = onDocumentCreated("stories/{storyId}",
@@ -253,8 +254,13 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
       });
 });
 
-exports.videoJanitor = onSchedule("every 5 minutes", (event) => {
+/* TODO: Need to use another way to trigger the action / download the videos since the token creation
+  * does not work as expected. */
+exports.videoJanitor = onSchedule("every 5 minutes", async (event) => {
   const videoQueueRef = admin.firestore().collection("video_queue");
+
+  // You'll need to modify the way you call the downloadVideoTask function to include the custom token
+  // This could involve modifying the client code or using an HTTP request with appropriate headers
 
   return videoQueueRef.where("status", "in", ["error", "started"])
       .get()
@@ -266,7 +272,8 @@ exports.videoJanitor = onSchedule("every 5 minutes", (event) => {
           const elapsedTime = (new Date() - datetime) / 1000;
 
           if (status === "error" || (status === "started" && elapsedTime > 120)) {
-          // Trigger the downloadVideoTask function without waiting for it to complete
+            // Trigger the downloadVideoTask function without waiting for it to complete
+            // You'll need to modify this part to include the custom token in the request
             admin.functions().httpsCallable("downloadVideoTask")({videoData: videoData})
                 .catch((error) => {
                   console.error("Error triggering video download function:", error);

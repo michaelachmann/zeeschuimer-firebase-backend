@@ -3,6 +3,7 @@ module.exports = {
   env: {
     es6: true,
     node: true,
+    es2024: true,
   },
   extends: [
     "eslint:recommended",
