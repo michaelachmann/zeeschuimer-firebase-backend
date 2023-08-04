@@ -2,7 +2,7 @@ const {onRequest} = require("firebase-functions/v2/https");
 const {onCall} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
-const {onSchedule} = require("firebase-functions/v2/scheduler");
+// const {onSchedule} = require("firebase-functions/v2/scheduler");
 
 
 const dotenv = require("dotenv");
@@ -50,43 +50,85 @@ app.post("/add", (req, res) => (createStory(req, res)));
 function createStory(req, res) {
   const data = req.body; // POST data received
   // const projectId = req.projectId; // Project ID from middleware
+  const stories = Array.isArray(data) ? data : [data];
 
-  // Check if data is an array
-  if (Array.isArray(data)) {
-    const promises = data.map((item) => {
-      return admin
-          .firestore()
-          .collection("projects")
-          .doc(projectId)
-          .collection("stories")
-          .doc(item.id)
-          .set(item);
-    });
-
-    Promise.all(promises)
-        .then(() => {
-          res.status(200).send("Data saved successfully");
-        })
-        .catch((error) => {
-          console.error("Error adding documents: ", error);
-          res.status(500).send("Error saving data");
-        });
-  } else {
-    admin
+  // Save the stories
+  const promises = stories.map((item) => {
+    return admin
         .firestore()
         .collection("projects")
         .doc(projectId)
         .collection("stories")
-        .doc(data.id)
-        .set(data)
-        .then((docRef) => {
-          res.status(200).send("Data saved successfully");
-        })
-        .catch((error) => {
-          console.error("Error adding document: ", error);
-          res.status(500).send("Error saving data");
-        });
-  }
+        .doc(item.id)
+        .set(item);
+  });
+
+  Promise.all(promises)
+      .then(() => {
+      // Update the statistics
+        return updateStatistics(projectId, stories);
+      })
+      .then(() => {
+        res.status(200).send("Data saved successfully");
+      })
+      .catch((error) => {
+        console.error("Error adding documents: ", error);
+        res.status(500).send("Error saving data");
+      });
+}
+
+function updateStatistics(projectId, stories) {
+  const db = admin.firestore();
+  const statsRef = db.collection("projects").doc(projectId).collection("statistics");
+
+  // Get the current hour
+  const currentHour = new Date().toISOString().slice(0, 13) + ":00:00.000Z";
+
+  // Prepare the statistics
+  const stats = {
+    total: stories.length,
+    usernames: {},
+  };
+
+  stories.forEach((story) => {
+    const username = story.user.username;
+    stats.usernames[username] = (stats.usernames[username] || 0) + 1;
+  });
+
+  // Update the statistics in Firestore
+  return statsRef.doc(currentHour).set(stats, {merge: true});
+}
+
+
+function updateDownloadStatistics(projectId, type, status) {
+  const db = admin.firestore();
+
+  // Get the current hour
+  const currentHour = new Date().toISOString().slice(0, 13) + ":00:00.000Z";
+
+  const statsRef = db.collection("projects").doc(projectId).collection("download_statistics").doc(currentHour);
+
+  return db.runTransaction((transaction) => {
+    return transaction.get(statsRef).then((doc) => {
+      let currentValue = 0;
+
+      // Check if the document exists before reading the data
+      if (doc.exists) {
+        currentValue = doc.data()[`${type}_${status}`] || 0;
+      }
+
+      const newValue = currentValue + 1;
+
+      // Prepare the update data
+      const updateData = {
+        [`${type}_${status}`]: newValue,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // Update the document within the transaction
+      transaction.set(statsRef, updateData, {merge: true});
+    });
+  });
 }
 
 
@@ -133,33 +175,38 @@ function downloadImage(event) {
   // Add the queue entry to Firestore and start the download
   return imageQueueRef.add(imageQueueData)
       .then((docRef) => {
-        console.log("Image download queued for story:", story.id);
+        // Update the download statistics
+        return updateDownloadStatistics(projectId, "image", "queued")
+            .then(() => {
+              console.log("Image download queued for story:", story.id);
+              console.log("Image download queued for story:", story.id);
 
-        // Use axios to download the image
-        return axios.get(imageUrl, {responseType: "arraybuffer"})
-            .then((response) => {
-              const imageBuffer = Buffer.from(response.data, "binary");
-              const file = bucket.file(destinationFileName);
+              // Use axios to download the image
+              return axios.get(imageUrl, {responseType: "arraybuffer"})
+                  .then((response) => {
+                    const imageBuffer = Buffer.from(response.data, "binary");
+                    const file = bucket.file(destinationFileName);
 
-              // Save the image to the bucket
-              return file.save(imageBuffer, {contentType: `image/${fileExtension}`})
-                  .then(() => {
-                    console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
-                    // Update the queue entry with status "success"
-                    return docRef.update({status: "success"});
+                    // Save the image to the bucket
+                    return file.save(imageBuffer, {contentType: `image/${fileExtension}`})
+                        .then(() => {
+                          console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+                          // Update the queue entry with status "success"
+                          return docRef.update({status: "success"});
+                        })
+                        .catch((error) => {
+                          const errorMessage = "Error saving the image to Firebase Storage: " + error;
+                          console.error(errorMessage);
+                          // Update the queue entry with status "error" and the error message
+                          return docRef.update({status: "error", errorMessage: errorMessage});
+                        });
                   })
                   .catch((error) => {
-                    const errorMessage = "Error saving the image to Firebase Storage: " + error;
+                    const errorMessage = "Error downloading the image: " + error;
                     console.error(errorMessage);
                     // Update the queue entry with status "error" and the error message
                     return docRef.update({status: "error", errorMessage: errorMessage});
                   });
-            })
-            .catch((error) => {
-              const errorMessage = "Error downloading the image: " + error;
-              console.error(errorMessage);
-              // Update the queue entry with status "error" and the error message
-              return docRef.update({status: "error", errorMessage: errorMessage});
             });
       })
       .catch((error) => {
@@ -206,44 +253,48 @@ function downloadVideo(event) {
 
   return videoQueueRef.add(videoQueueData)
       .then((docRef) => {
-        console.log("Video download queued for story:", story.id);
+        // Update the download statistics
+        return updateDownloadStatistics(projectId, "video", "queued")
+            .then(() => {
+              console.log("Video download queued for story:", story.id);
 
-        return axios({
-          url: videoURL,
-          method: "GET",
-          responseType: "stream",
-        })
-            .then((response) => {
-              return new Promise((resolve, reject) => {
-                const file = bucket.file(destinationFileName);
-                const writeStream = file.createWriteStream({
-                  metadata: {
-                    contentType: `video/${fileExtension}`,
-                  },
-                });
+              return axios({
+                url: videoURL,
+                method: "GET",
+                responseType: "stream",
+              })
+                  .then((response) => {
+                    return new Promise((resolve, reject) => {
+                      const file = bucket.file(destinationFileName);
+                      const writeStream = file.createWriteStream({
+                        metadata: {
+                          contentType: `video/${fileExtension}`,
+                        },
+                      });
 
-                response.data.pipe(writeStream);
+                      response.data.pipe(writeStream);
 
-                writeStream.on("finish", () => {
-                  console.log("Video downloaded and saved to Firebase Storage:", destinationFileName);
-                  docRef.update({status: "success"}).then(resolve).catch(reject);
-                });
+                      writeStream.on("finish", () => {
+                        console.log("Video downloaded and saved to Firebase Storage:", destinationFileName);
+                        docRef.update({status: "success"}).then(resolve).catch(reject);
+                      });
 
-                writeStream.on("error", (error) => {
-                  const errorMessage = "Error saving the video to Firebase Storage: " + error;
-                  console.error(errorMessage);
-                  docRef.update({status: "error", errorMessage: errorMessage}).then(reject).catch(reject);
-                });
-              });
+                      writeStream.on("error", (error) => {
+                        const errorMessage = "Error saving the video to Firebase Storage: " + error;
+                        console.error(errorMessage);
+                        docRef.update({status: "error", errorMessage: errorMessage}).then(reject).catch(reject);
+                      });
+                    });
+                  })
+                  .catch((error) => {
+                    const errorMessage = "Error downloading the video: " + error;
+                    console.error(errorMessage);
+                    return docRef.update({status: "error", errorMessage: errorMessage});
+                  });
             })
             .catch((error) => {
-              const errorMessage = "Error downloading the video: " + error;
-              console.error(errorMessage);
-              return docRef.update({status: "error", errorMessage: errorMessage});
+              console.error("Error adding video to queue:", error);
             });
-      })
-      .catch((error) => {
-        console.error("Error adding video to queue:", error);
       });
 }
 
@@ -282,35 +333,35 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
 
 /* TODO: Need to use another way to trigger the action / download the videos since the token creation
   * does not work as expected. */
-exports.videoJanitor = onSchedule("every 5 minutes", async (event) => {
-  const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
+// exports.videoJanitor = onSchedule("every 5 minutes", async (event) => {
+//   const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
 
-  // You'll need to modify the way you call the downloadVideoTask function to include the custom token
-  // This could involve modifying the client code or using an HTTP request with appropriate headers
+//   // You'll need to modify the way you call the downloadVideoTask function to include the custom token
+//   // This could involve modifying the client code or using an HTTP request with appropriate headers
 
-  return videoQueueRef.where("status", "in", ["error", "started"])
-      .get()
-      .then((querySnapshot) => {
-        querySnapshot.forEach((doc) => {
-          const videoData = doc.data();
-          const status = videoData.status;
-          const datetime = videoData.datetime.toDate();
-          const elapsedTime = (new Date() - datetime) / 1000;
+//   return videoQueueRef.where("status", "in", ["error", "started"])
+//       .get()
+//       .then((querySnapshot) => {
+//         querySnapshot.forEach((doc) => {
+//           const videoData = doc.data();
+//           const status = videoData.status;
+//           const datetime = videoData.datetime.toDate();
+//           const elapsedTime = (new Date() - datetime) / 1000;
 
-          if (status === "error" || (status === "started" && elapsedTime > 120)) {
-            // Trigger the downloadVideoTask function without waiting for it to complete
-            // You'll need to modify this part to include the custom token in the request
-            admin.functions().httpsCallable("downloadVideoTask")({videoData: videoData})
-                .catch((error) => {
-                  console.error("Error triggering video download function:", error);
-                });
-          }
-        });
+//           if (status === "error" || (status === "started" && elapsedTime > 120)) {
+//             // Trigger the downloadVideoTask function without waiting for it to complete
+//             // You'll need to modify this part to include the custom token in the request
+//             admin.functions().httpsCallable("downloadVideoTask")({videoData: videoData})
+//                 .catch((error) => {
+//                   console.error("Error triggering video download function:", error);
+//                 });
+//           }
+//         });
 
-        // Return a resolved promise since we're not waiting for the download functions to complete
-        return Promise.resolve();
-      })
-      .catch((error) => {
-        console.error("Error querying video queue:", error);
-      });
-});
+//         // Return a resolved promise since we're not waiting for the download functions to complete
+//         return Promise.resolve();
+//       })
+//       .catch((error) => {
+//         console.error("Error querying video queue:", error);
+//       });
+// });
