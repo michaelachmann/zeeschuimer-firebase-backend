@@ -41,25 +41,45 @@ const apiKeyMiddleware = (req, res, next) => {
 // Apply authentication middleware to all routes
 app.use(apiKeyMiddleware);
 
-// Add a story to Firestore
 app.post("/add", (req, res) => (createStory(req, res)));
 
 function createStory(req, res) {
   const data = req.body; // POST data received
 
-  // Save the data to Firestore
-  admin
-      .firestore()
-      .collection("stories")
-      .doc(data.id)
-      .set(data)
-      .then((docRef) => {
-        res.status(200).send("Data saved successfully");
-      })
-      .catch((error) => {
-        console.error("Error adding document: ", error);
-        res.status(500).send("Error saving data");
-      });
+  // Check if data is an array
+  if (Array.isArray(data)) {
+    // Handle multiple data objects
+    const promises = data.map((item) => {
+      return admin
+          .firestore()
+          .collection("stories")
+          .doc(item.id)
+          .set(item);
+    });
+
+    Promise.all(promises)
+        .then(() => {
+          res.status(200).send("Data saved successfully");
+        })
+        .catch((error) => {
+          console.error("Error adding documents: ", error);
+          res.status(500).send("Error saving data");
+        });
+  } else {
+    // Handle a single data object
+    admin
+        .firestore()
+        .collection("stories")
+        .doc(data.id)
+        .set(data)
+        .then((docRef) => {
+          res.status(200).send("Data saved successfully");
+        })
+        .catch((error) => {
+          console.error("Error adding document: ", error);
+          res.status(500).send("Error saving data");
+        });
+  }
 }
 
 
@@ -219,7 +239,6 @@ function downloadVideo(event) {
         console.error("Error adding video to queue:", error);
       });
 }
-
 
 
 // Function to download image for a story
