@@ -86,7 +86,7 @@ function updateStatistics(projectId, stories) {
 
   // Prepare the statistics
   const stats = {
-    total: stories.length,
+    total: FieldValue.increment(1),
     usernames: {},
   };
 
