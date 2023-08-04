@@ -17,6 +17,9 @@ admin.initializeApp();
 // const storage = new Storage();
 const app = express();
 
+// TODO: Remove this line before deploying to production
+const projectId = process.env.API_KEY; // Fixed projectId for testing.
+
 // Load environment variables from .env file
 dotenv.config();
 
@@ -43,15 +46,18 @@ app.use(apiKeyMiddleware);
 
 app.post("/add", (req, res) => (createStory(req, res)));
 
+
 function createStory(req, res) {
   const data = req.body; // POST data received
+  // const projectId = req.projectId; // Project ID from middleware
 
   // Check if data is an array
   if (Array.isArray(data)) {
-    // Handle multiple data objects
     const promises = data.map((item) => {
       return admin
           .firestore()
+          .collection("projects")
+          .doc(projectId)
           .collection("stories")
           .doc(item.id)
           .set(item);
@@ -66,9 +72,10 @@ function createStory(req, res) {
           res.status(500).send("Error saving data");
         });
   } else {
-    // Handle a single data object
     admin
         .firestore()
+        .collection("projects")
+        .doc(projectId)
         .collection("stories")
         .doc(data.id)
         .set(data)
@@ -121,7 +128,7 @@ function downloadImage(event) {
     datetime: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  const imageQueueRef = admin.firestore().collection("image_queue");
+  const imageQueueRef = admin.firestore().collection("projects").doc(projectId).collection("image_queue");
 
   // Add the queue entry to Firestore and start the download
   return imageQueueRef.add(imageQueueData)
@@ -195,7 +202,7 @@ function downloadVideo(event) {
     datetime: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  const videoQueueRef = admin.firestore().collection("video_queue");
+  const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
 
   return videoQueueRef.add(videoQueueData)
       .then((docRef) => {
@@ -242,12 +249,12 @@ function downloadVideo(event) {
 
 
 // Function to download image for a story
-exports.downloadImage = onDocumentCreated("stories/{storyId}",
+exports.downloadImage = onDocumentCreated("projects/{projectId}/stories/{storyId}",
     (event) => downloadImage(event));
 
 // Function to download video for a story
 exports.downloadVideo = onDocumentCreated({
-  document: "stories/{storyId}",
+  document: "projects/{projectId}/stories/{storyId}",
   memory: "512MiB",
 },
 (event) => downloadVideo(event));
@@ -264,7 +271,7 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
   return downloadVideo({data: {data: videoData}})
       .then(() => {
       // Update the status to "started" in the queue
-        return admin.firestore().collection("video_queue").doc(videoData.id)
+        return admin.firestore().collection("projects").doc(projectId).collection("video_queue").doc(videoData.id)
             .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
       })
       .catch((error) => {
@@ -276,7 +283,7 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
 /* TODO: Need to use another way to trigger the action / download the videos since the token creation
   * does not work as expected. */
 exports.videoJanitor = onSchedule("every 5 minutes", async (event) => {
-  const videoQueueRef = admin.firestore().collection("video_queue");
+  const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
 
   // You'll need to modify the way you call the downloadVideoTask function to include the custom token
   // This could involve modifying the client code or using an HTTP request with appropriate headers
