@@ -84,21 +84,45 @@ function updateStatistics(projectId, stories) {
   // Get the current hour
   const currentHour = new Date().toISOString().slice(0, 13) + ":00:00.000Z";
 
-  // Prepare the statistics
-  const stats = {
-    total: FieldValue.increment(1),
-    usernames: {},
-  };
+  // Update the statistics in Firestore using a transaction
+  return db.runTransaction((transaction) => {
+    return transaction.get(statsRef.doc(currentHour)).then((doc) => {
+      if (!doc.exists) {
+        // Prepare the statistics
+        const stats = {
+          total: stories.length,
+          usernames: {},
+        };
 
-  stories.forEach((story) => {
-    const username = story.user.username;
-    stats.usernames[username] = (stats.usernames[username] || 0) + 1;
+        stories.forEach((story) => {
+          const username = story.user.username;
+          if (!stats.usernames[username]) {
+            stats.usernames[username] = 1;
+          } else {
+            stats.usernames[username] += 1;
+          }
+        });
+        transaction.set(statsRef.doc(currentHour), stats);
+      } else {
+        const oldStats = doc.data();
+
+        stories.forEach((story) => {
+          const username = story.user.username;
+          if (!oldStats.usernames[username]) {
+            oldStats.usernames[username] = 1;
+          } else {
+            oldStats.usernames[username] += 1;
+          }
+        });
+
+        transaction.update(statsRef.doc(currentHour), {
+          total: admin.firestore.FieldValue.increment(stories.length),
+          usernames: oldStats.usernames,
+        });
+      }
+    });
   });
-
-  // Update the statistics in Firestore
-  return statsRef.doc(currentHour).set(stats, {merge: true});
 }
-
 
 function updateDownloadStatistics(projectId, type, status) {
   const db = admin.firestore();
@@ -160,7 +184,7 @@ function downloadImage(event) {
   const fileExtension = "jpeg";
 
   // Set the destination file name in the bucket
-  const destinationFileName = `stories/images/${story.user.username}/${story.id}.${fileExtension}`;
+  const destinationFileName = `projects/${projectId}/stories/images/${story.user.username}/${story.id}.${fileExtension}`;
 
   // Create a queue entry with status "started" in the image_queue collection
   const imageQueueData = {
@@ -240,7 +264,7 @@ function downloadVideo(event) {
 
   const videoURL = story.video_versions[0].url;
   const fileExtension = "mp4";
-  const destinationFileName = `stories/videos/${story.user.username}/${story.id}.${fileExtension}`;
+  const destinationFileName = `projects/${projectId}/stories/videos/${story.user.username}/${story.id}.${fileExtension}`;
 
   const videoQueueData = {
     storyId: story.id,
