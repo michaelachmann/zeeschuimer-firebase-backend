@@ -2,7 +2,9 @@ const {onRequest} = require("firebase-functions/v2/https");
 const {onCall} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
-// const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
+const nodemailer = require("nodemailer");
+const {Telegraf} = require("telegraf");
 
 
 const dotenv = require("dotenv");
@@ -26,6 +28,31 @@ dotenv.config();
 // locate all functions closest to users
 setGlobalOptions({region: "europe-west1"});
 
+// Initialize Telegram Bot
+const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
+
+bot.start((ctx) => {
+  const chatId = ctx.chat.id;
+  ctx.reply(`Your chat ID is: ${chatId}`);
+});
+
+bot.launch();
+
+exports.bot = onRequest((req, res) => {
+  bot.handleUpdate(req.body, res);
+});
+
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  secure: true, // true for SSL
+  auth: {
+    user: process.env.EMAIL_USERNAME,
+    pass: process.env.EMAIL_PASSWORD,
+    type: "login", // Use 'login' for plain authentication
+  },
+});
 
 // Using hardcoded API key for simplicity
 // Authentication Middleware
@@ -355,6 +382,7 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
       });
 });
 
+
 /* TODO: Need to use another way to trigger the action / download the videos since the token creation
   * does not work as expected. */
 // exports.videoJanitor = onSchedule("every 5 minutes", async (event) => {
@@ -389,3 +417,59 @@ exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
 //         console.error("Error querying video queue:", error);
 //       });
 // });
+
+
+exports.checkDownloadStatistics = onSchedule("every 1 hours", async (context) => {
+  const db = admin.firestore();
+  const projectsRef = db.collection("projects");
+  const projectsSnapshot = await projectsRef.get();
+
+  for (const projectDoc of projectsSnapshot.docs) {
+    const projectId = projectDoc.id;
+    const projectData = projectDoc.data();
+    const recipientEmail = projectData.email;
+    const projectChatId = projectData.chat_id;
+
+    const statsRef = db.collection("projects").doc(projectId).collection("download_statistics");
+    const snapshot = await statsRef.orderBy("lastUpdated", "desc").limit(1).get();
+
+    let message;
+
+    if (!snapshot.empty) {
+      const lastUpdated = snapshot.docs[0].data().lastUpdated.toDate();
+      const currentTime = new Date();
+      const diffHours = Math.abs(currentTime - lastUpdated) / 36e5;
+
+      if (diffHours > 13) {
+        message = `The latest document in download_statistics for project ${projectId} is older than 13 hours.`;
+      }
+    } else {
+      message = `No documents found in download_statistics for project ${projectId}.`;
+    }
+
+    if (message) {
+      // Send Telegram message if chat_id exists
+      if (projectChatId) {
+        bot.telegram.sendMessage(projectChatId, message);
+      }
+
+      // Send email if email exists
+      if (recipientEmail) {
+        const mailOptions = {
+          from: "no-reply@social-media-lab.net",
+          to: recipientEmail,
+          subject: "IG Loader Alert",
+          text: message,
+        };
+        console.log(`Sending E-Mail to: ${process.env.SMTP_HOST}`);
+
+        try {
+          await transporter.sendMail(mailOptions);
+          console.log("Email sent successfully!");
+        } catch (error) {
+          console.error("Error sending email:", error);
+        }
+      }
+    }
+  }
+});
