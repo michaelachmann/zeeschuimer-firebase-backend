@@ -4,7 +4,6 @@ const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const nodemailer = require("nodemailer");
-const {Telegraf} = require("telegraf");
 
 
 const dotenv = require("dotenv");
@@ -29,18 +28,18 @@ dotenv.config();
 setGlobalOptions({region: "europe-west1"});
 
 // Initialize Telegram Bot
-const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
+// const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
-bot.start((ctx) => {
-  const chatId = ctx.chat.id;
-  ctx.reply(`Your chat ID is: ${chatId}`);
-});
+// bot.start((ctx) => {
+//   const chatId = ctx.chat.id;
+//   ctx.reply(`Your chat ID is: ${chatId}`);
+// });
 
-bot.launch();
+// bot.launch();
 
-exports.bot = onRequest((req, res) => {
-  bot.handleUpdate(req.body, res);
-});
+// exports.bot = onRequest((req, res) => {
+//   bot.handleUpdate(req.body, res);
+// });
 
 
 const transporter = nodemailer.createTransport({
@@ -450,7 +449,7 @@ exports.checkDownloadStatistics = onSchedule("every 1 hours", async (context) =>
     if (message) {
       // Send Telegram message if chat_id exists
       if (projectChatId) {
-        bot.telegram.sendMessage(projectChatId, message);
+        // bot.telegram.sendMessage(projectChatId, message);
       }
 
       // Send email if email exists
@@ -472,4 +471,214 @@ exports.checkDownloadStatistics = onSchedule("every 1 hours", async (context) =>
       }
     }
   }
+});
+
+
+exports.imageJanitor = onSchedule("every 5 minutes", async (context) => {
+  const bucketUrl = process.env.BUCKET_URL;
+  if (!bucketUrl) {
+    console.error("Bucket URL is not defined in .env file");
+    return Promise.reject(new Error("Bucket URL is missing"));
+  }
+
+  const bucket = getStorage().bucket(bucketUrl);
+
+  // Reference to the Firestore collection
+  const imageQueueRef = admin.firestore().collection("projects").doc(projectId).collection("image_queue");
+
+  // Query for images with a status of "error"
+  return imageQueueRef.where("status", "!=", "success").get()
+      .then((snapshot) => {
+        // If no documents are found, simply return
+        if (snapshot.empty) {
+          console.log("No error entries found.");
+          return null;
+        }
+
+        // Array to hold all the promises for retrying the downloads
+        const retryPromises = [];
+
+        snapshot.forEach((doc) => {
+          const imageData = doc.data();
+
+          // Check the retryCount and if it's 1 (or more, though that shouldn't be the case here), skip to the next item.
+          if (imageData.retryCount && imageData.retryCount >= 3) {
+            return; // Skip this item in the loop
+          }
+
+          const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(imageData.storyId);
+
+          retryPromises.push(storyRef.get().then((storyDoc) => {
+            if (!storyDoc.exists) throw new Error("Story not found!");
+
+            const storyData = storyDoc.data();
+            const username = storyData.user.username;
+            const fileExtension = "jpeg";
+            const destinationFileName = `projects/${projectId}/stories/images/${username}/${storyData.id}.${fileExtension}`;
+
+            return axios({
+              url: imageData.imageUrl, // Corrected this line
+              method: "GET",
+              responseType: "stream",
+            })
+                .then((response) => {
+                  return new Promise((resolve, reject) => {
+                    const file = bucket.file(destinationFileName);
+                    const writeStream = file.createWriteStream({
+                      metadata: {
+                        contentType: `image/${fileExtension}`,
+                      },
+                    });
+
+                    response.data.pipe(writeStream);
+
+                    writeStream.on("finish", () => {
+                      console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+                      doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
+                    });
+
+                    writeStream.on("error", (error) => {
+                      const errorMessage = "Error saving the Image to Firebase Storage: ";
+                      console.log(error);
+                      console.log(errorMessage);
+                      // Update status, errorMessage, and increment retryCount by 1
+                      doc.ref.update({
+                        status: "error",
+                        errorMessage: errorMessage,
+                        retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+                      }).then(reject).catch(reject);
+                    });
+                  });
+                })
+                .catch((error) => {
+                  let errorMessage = "Unknown error occurred.";
+
+                  if (error.response) {
+                    if (error.response.status === 403) {
+                      errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
+                    } else {
+                      errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
+                    }
+                  } else if (error.message) {
+                    errorMessage = error.message;
+                  }
+                  console.log(errorMessage);
+                  doc.ref.update({
+                    status: "error",
+                    errorMessage: errorMessage,
+                    retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+                  });
+                });
+          }));
+        });
+
+        // Wait for all retry processes to complete
+        return Promise.all(retryPromises);
+      })
+      .catch((error) => {
+        console.error("Error in the imageJanitor function:", error);
+      });
+});
+
+exports.videoJanitor = onSchedule("every 5 minutes", async (context) => {
+  const bucketUrl = process.env.BUCKET_URL;
+  if (!bucketUrl) {
+    console.error("Bucket URL is not defined in .env file");
+    return Promise.reject(new Error("Bucket URL is missing"));
+  }
+
+  const bucket = getStorage().bucket(bucketUrl);
+
+  // Reference to the Firestore collection
+  const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
+
+  return videoQueueRef.where("status", "!=", "success").get()
+      .then((snapshot) => {
+        if (snapshot.empty) {
+          console.log("No error entries found.");
+          return null;
+        }
+
+        const retryPromises = [];
+
+        snapshot.forEach((doc) => {
+          const videoData = doc.data();
+
+          // Check the retryCount and if it's 1 (or more), skip to the next item.
+          if (videoData.retryCount && videoData.retryCount >= 4) {
+            return; // Skip this item in the loop
+          }
+
+          const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(videoData.storyId);
+
+          retryPromises.push(storyRef.get().then((storyDoc) => {
+            if (!storyDoc.exists) throw new Error("Story not found!");
+
+            const storyData = storyDoc.data();
+            const username = storyData.user.username;
+            const fileExtension = "mp4"; // Assuming video files are mp4. Change if different.
+            const destinationFileName = `projects/${projectId}/stories/videos/${username}/${storyData.id}.${fileExtension}`;
+
+            return axios({
+              url: videoData.videoUrl, // Assume the video URL is stored in `videoUrl` attribute
+              method: "GET",
+              responseType: "stream",
+            })
+                .then((response) => {
+                  return new Promise((resolve, reject) => {
+                    const file = bucket.file(destinationFileName);
+                    const writeStream = file.createWriteStream({
+                      metadata: {
+                        contentType: `video/${fileExtension}`,
+                      },
+                    });
+
+                    response.data.pipe(writeStream);
+
+
+                    writeStream.on("finish", () => {
+                      console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+                      doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
+                    });
+
+                    writeStream.on("error", (error) => {
+                      const errorMessage = "Error saving the Video to Firebase Storage: ";
+                      console.log(error);
+                      console.log(errorMessage);
+                      // Update status, errorMessage, and increment retryCount by 1
+                      doc.ref.update({
+                        status: "error",
+                        errorMessage: errorMessage,
+                        retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+                      }).then(reject).catch(reject);
+                    });
+                  });
+                })
+                .catch((error) => {
+                  let errorMessage = "Unknown error occurred.";
+
+                  if (error.response) {
+                    if (error.response.status === 403) {
+                      errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
+                    } else {
+                      errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
+                    }
+                  } else if (error.message) {
+                    errorMessage = error.message;
+                  }
+                  console.log(errorMessage);
+                  doc.ref.update({
+                    status: "error",
+                    errorMessage: errorMessage,
+                    retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+                  });
+                });
+          }));
+        });
+
+        return Promise.all(retryPromises);
+      })
+      .catch((error) => {
+        console.error("Error in the videoJanitor function:", error);
+      });
 });
