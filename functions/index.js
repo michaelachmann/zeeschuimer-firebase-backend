@@ -1,5 +1,5 @@
 const {onRequest} = require("firebase-functions/v2/https");
-const {onCall} = require("firebase-functions/v2/https");
+// const {onCall} = require("firebase-functions/v2/https");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
@@ -19,7 +19,7 @@ admin.initializeApp();
 const app = express();
 
 // TODO: Remove this line before deploying to production
-const projectId = process.env.API_KEY; // Fixed projectId for testing.
+// const projectId = process.env.API_KEY; // Fixed projectId for testing.
 
 // Load environment variables from .env file
 dotenv.config();
@@ -53,18 +53,41 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Using hardcoded API key for simplicity
-// Authentication Middleware
-const apiKeyMiddleware = (req, res, next) => {
+// Middleware to authenticate API Key
+const apiKeyMiddleware = async (req, res, next) => {
+  // Assuming 'project_id' is a GET parameter in the URL
+  const projectId = req.query.project;
   const apiKey = req.header("x-api-key");
-  const validApiKey = process.env.API_KEY;
 
-  // Replace 'YOUR_API_KEY' with the actual API key generated earlier
-  if (!apiKey || apiKey !== validApiKey) {
-    return res.status(401).json({error: "Unauthorized"});
+  if (!projectId) {
+    return res.status(400).json({error: "Project ID must be provided"});
   }
 
-  next();
+  if (!apiKey) {
+    return res.status(401).json({error: "API Key must be provided"});
+  }
+
+  try {
+    const projectDoc = await admin.firestore().collection("projects").doc(projectId).get();
+
+    if (!projectDoc.exists) {
+      return res.status(404).json({error: "Project not found"});
+    }
+
+    const projectData = projectDoc.data();
+
+    if (apiKey !== projectData.api_key) {
+      return res.status(403).json({error: "Invalid API key"});
+    }
+
+    // If the API key is valid, add the projectId to the request object for use in subsequent handlers
+    req.projectId = projectId;
+
+    next();
+  } catch (error) {
+    console.error("Error during API key verification:", error);
+    return res.status(500).json({error: "Internal server error"});
+  }
 };
 
 // Apply authentication middleware to all routes
@@ -75,7 +98,7 @@ app.post("/add", (req, res) => (createStory(req, res)));
 
 function createStory(req, res) {
   const data = req.body; // POST data received
-  // const projectId = req.projectId; // Project ID from middleware
+  const projectId = req.projectId; // Project ID from middleware
   const stories = Array.isArray(data) ? data : [data];
 
   // Save the stories
@@ -192,6 +215,7 @@ function updateDownloadStatistics(projectId, type, status) {
  * @return {Promise} - A promise that resolves when the download is complete and the Firestore document is updated.
  */
 function downloadImage(event) {
+  const projectId = event.params.projectId;
   // Retrieve the bucket URL from the environment variables
   const bucketUrl = process.env.BUCKET_URL;
   if (!bucketUrl) {
@@ -275,6 +299,7 @@ function downloadImage(event) {
  * @return {Promise} - A promise that resolves when the download is complete and the Firestore document is updated.
  */
 function downloadVideo(event) {
+  const projectId = event.params.projectId;
   const bucketUrl = process.env.BUCKET_URL;
   if (!bucketUrl) {
     console.error("Bucket URL is not defined in .env file");
@@ -363,23 +388,23 @@ exports.downloadVideo = onDocumentCreated({
 // Expose Express API as a single Cloud Function:
 exports.story = onRequest(app);
 
-// Downloading a video is a long-running task, so we need to use a background function
-exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
-  // Extract the video data from the input
-  const videoData = data.videoData;
+// // Downloading a video is a long-running task, so we need to use a background function
+// exports.downloadVideoTask = onCall({memory: "512MiB"}, (data, context) => {
+//   // Extract the video data from the input
+//   const videoData = data.videoData;
 
-  // Call the existing downloadVideo function
-  return downloadVideo({data: {data: videoData}})
-      .then(() => {
-      // Update the status to "started" in the queue
-        return admin.firestore().collection("projects").doc(projectId).collection("video_queue").doc(videoData.id)
-            .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
-      })
-      .catch((error) => {
-        console.error("Error retrying video download:", error);
-      // Handle the error as needed
-      });
-});
+//   // Call the existing downloadVideo function
+//   return downloadVideo({data: {data: videoData}})
+//       .then(() => {
+//       // Update the status to "started" in the queue
+//         return admin.firestore().collection("projects").doc(projectId).collection("video_queue").doc(videoData.id)
+//             .update({status: "started", datetime: admin.firestore.FieldValue.serverTimestamp()});
+//       })
+//       .catch((error) => {
+//         console.error("Error retrying video download:", error);
+//       // Handle the error as needed
+//       });
+// });
 
 
 /* TODO: Need to use another way to trigger the action / download the videos since the token creation
@@ -474,211 +499,211 @@ exports.checkDownloadStatistics = onSchedule("every 1 hours", async (context) =>
 });
 
 
-exports.imageJanitor = onSchedule("every 5 minutes", async (context) => {
-  const bucketUrl = process.env.BUCKET_URL;
-  if (!bucketUrl) {
-    console.error("Bucket URL is not defined in .env file");
-    return Promise.reject(new Error("Bucket URL is missing"));
-  }
+// exports.imageJanitor = onSchedule("every 5 minutes", async (context) => {
+//   const bucketUrl = process.env.BUCKET_URL;
+//   if (!bucketUrl) {
+//     console.error("Bucket URL is not defined in .env file");
+//     return Promise.reject(new Error("Bucket URL is missing"));
+//   }
 
-  const bucket = getStorage().bucket(bucketUrl);
+//   const bucket = getStorage().bucket(bucketUrl);
 
-  // Reference to the Firestore collection
-  const imageQueueRef = admin.firestore().collection("projects").doc(projectId).collection("image_queue");
+//   // Reference to the Firestore collection
+//   const imageQueueRef = admin.firestore().collection("projects").doc(projectId).collection("image_queue");
 
-  // Query for images with a status of "error"
-  return imageQueueRef.where("status", "!=", "success").get()
-      .then((snapshot) => {
-        // If no documents are found, simply return
-        if (snapshot.empty) {
-          console.log("No error entries found.");
-          return null;
-        }
+//   // Query for images with a status of "error"
+//   return imageQueueRef.where("status", "!=", "success").get()
+//       .then((snapshot) => {
+//         // If no documents are found, simply return
+//         if (snapshot.empty) {
+//           console.log("No error entries found.");
+//           return null;
+//         }
 
-        // Array to hold all the promises for retrying the downloads
-        const retryPromises = [];
+//         // Array to hold all the promises for retrying the downloads
+//         const retryPromises = [];
 
-        snapshot.forEach((doc) => {
-          const imageData = doc.data();
+//         snapshot.forEach((doc) => {
+//           const imageData = doc.data();
 
-          // Check the retryCount and if it's 1 (or more, though that shouldn't be the case here), skip to the next item.
-          if (imageData.retryCount && imageData.retryCount >= 3) {
-            return; // Skip this item in the loop
-          }
+//           // Check the retryCount and if it's 1 (or more, though that shouldn't be the case here), skip to the next item.
+//           if (imageData.retryCount && imageData.retryCount >= 3) {
+//             return; // Skip this item in the loop
+//           }
 
-          const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(imageData.storyId);
+//           const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(imageData.storyId);
 
-          retryPromises.push(storyRef.get().then((storyDoc) => {
-            if (!storyDoc.exists) throw new Error("Story not found!");
+//           retryPromises.push(storyRef.get().then((storyDoc) => {
+//             if (!storyDoc.exists) throw new Error("Story not found!");
 
-            const storyData = storyDoc.data();
-            const username = storyData.user.username;
-            const fileExtension = "jpeg";
-            const destinationFileName = `projects/${projectId}/stories/images/${username}/${storyData.id}.${fileExtension}`;
+//             const storyData = storyDoc.data();
+//             const username = storyData.user.username;
+//             const fileExtension = "jpeg";
+//             const destinationFileName = `projects/${projectId}/stories/images/${username}/${storyData.id}.${fileExtension}`;
 
-            return axios({
-              url: imageData.imageUrl, // Corrected this line
-              method: "GET",
-              responseType: "stream",
-            })
-                .then((response) => {
-                  return new Promise((resolve, reject) => {
-                    const file = bucket.file(destinationFileName);
-                    const writeStream = file.createWriteStream({
-                      metadata: {
-                        contentType: `image/${fileExtension}`,
-                      },
-                    });
+//             return axios({
+//               url: imageData.imageUrl, // Corrected this line
+//               method: "GET",
+//               responseType: "stream",
+//             })
+//                 .then((response) => {
+//                   return new Promise((resolve, reject) => {
+//                     const file = bucket.file(destinationFileName);
+//                     const writeStream = file.createWriteStream({
+//                       metadata: {
+//                         contentType: `image/${fileExtension}`,
+//                       },
+//                     });
 
-                    response.data.pipe(writeStream);
+//                     response.data.pipe(writeStream);
 
-                    writeStream.on("finish", () => {
-                      console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
-                      doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
-                    });
+//                     writeStream.on("finish", () => {
+//                       console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+//                       doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
+//                     });
 
-                    writeStream.on("error", (error) => {
-                      const errorMessage = "Error saving the Image to Firebase Storage: ";
-                      console.log(error);
-                      console.log(errorMessage);
-                      // Update status, errorMessage, and increment retryCount by 1
-                      doc.ref.update({
-                        status: "error",
-                        errorMessage: errorMessage,
-                        retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
-                      }).then(reject).catch(reject);
-                    });
-                  });
-                })
-                .catch((error) => {
-                  let errorMessage = "Unknown error occurred.";
+//                     writeStream.on("error", (error) => {
+//                       const errorMessage = "Error saving the Image to Firebase Storage: ";
+//                       console.log(error);
+//                       console.log(errorMessage);
+//                       // Update status, errorMessage, and increment retryCount by 1
+//                       doc.ref.update({
+//                         status: "error",
+//                         errorMessage: errorMessage,
+//                         retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+//                       }).then(reject).catch(reject);
+//                     });
+//                   });
+//                 })
+//                 .catch((error) => {
+//                   let errorMessage = "Unknown error occurred.";
 
-                  if (error.response) {
-                    if (error.response.status === 403) {
-                      errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
-                    } else {
-                      errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
-                    }
-                  } else if (error.message) {
-                    errorMessage = error.message;
-                  }
-                  console.log(errorMessage);
-                  doc.ref.update({
-                    status: "error",
-                    errorMessage: errorMessage,
-                    retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
-                  });
-                });
-          }));
-        });
+//                   if (error.response) {
+//                     if (error.response.status === 403) {
+//                       errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
+//                     } else {
+//                       errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
+//                     }
+//                   } else if (error.message) {
+//                     errorMessage = error.message;
+//                   }
+//                   console.log(errorMessage);
+//                   doc.ref.update({
+//                     status: "error",
+//                     errorMessage: errorMessage,
+//                     retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+//                   });
+//                 });
+//           }));
+//         });
 
-        // Wait for all retry processes to complete
-        return Promise.all(retryPromises);
-      })
-      .catch((error) => {
-        console.error("Error in the imageJanitor function:", error);
-      });
-});
+//         // Wait for all retry processes to complete
+//         return Promise.all(retryPromises);
+//       })
+//       .catch((error) => {
+//         console.error("Error in the imageJanitor function:", error);
+//       });
+// });
 
-exports.videoJanitor = onSchedule("every 5 minutes", async (context) => {
-  const bucketUrl = process.env.BUCKET_URL;
-  if (!bucketUrl) {
-    console.error("Bucket URL is not defined in .env file");
-    return Promise.reject(new Error("Bucket URL is missing"));
-  }
+// exports.videoJanitor = onSchedule("every 5 minutes", async (context) => {
+//   const bucketUrl = process.env.BUCKET_URL;
+//   if (!bucketUrl) {
+//     console.error("Bucket URL is not defined in .env file");
+//     return Promise.reject(new Error("Bucket URL is missing"));
+//   }
 
-  const bucket = getStorage().bucket(bucketUrl);
+//   const bucket = getStorage().bucket(bucketUrl);
 
-  // Reference to the Firestore collection
-  const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
+//   // Reference to the Firestore collection
+//   const videoQueueRef = admin.firestore().collection("projects").doc(projectId).collection("video_queue");
 
-  return videoQueueRef.where("status", "!=", "success").get()
-      .then((snapshot) => {
-        if (snapshot.empty) {
-          console.log("No error entries found.");
-          return null;
-        }
+//   return videoQueueRef.where("status", "!=", "success").get()
+//       .then((snapshot) => {
+//         if (snapshot.empty) {
+//           console.log("No error entries found.");
+//           return null;
+//         }
 
-        const retryPromises = [];
+//         const retryPromises = [];
 
-        snapshot.forEach((doc) => {
-          const videoData = doc.data();
+//         snapshot.forEach((doc) => {
+//           const videoData = doc.data();
 
-          // Check the retryCount and if it's 1 (or more), skip to the next item.
-          if (videoData.retryCount && videoData.retryCount >= 4) {
-            return; // Skip this item in the loop
-          }
+//           // Check the retryCount and if it's 1 (or more), skip to the next item.
+//           if (videoData.retryCount && videoData.retryCount >= 4) {
+//             return; // Skip this item in the loop
+//           }
 
-          const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(videoData.storyId);
+//           const storyRef = admin.firestore().collection("projects").doc(projectId).collection("stories").doc(videoData.storyId);
 
-          retryPromises.push(storyRef.get().then((storyDoc) => {
-            if (!storyDoc.exists) throw new Error("Story not found!");
+//           retryPromises.push(storyRef.get().then((storyDoc) => {
+//             if (!storyDoc.exists) throw new Error("Story not found!");
 
-            const storyData = storyDoc.data();
-            const username = storyData.user.username;
-            const fileExtension = "mp4"; // Assuming video files are mp4. Change if different.
-            const destinationFileName = `projects/${projectId}/stories/videos/${username}/${storyData.id}.${fileExtension}`;
+//             const storyData = storyDoc.data();
+//             const username = storyData.user.username;
+//             const fileExtension = "mp4"; // Assuming video files are mp4. Change if different.
+//             const destinationFileName = `projects/${projectId}/stories/videos/${username}/${storyData.id}.${fileExtension}`;
 
-            return axios({
-              url: videoData.videoUrl, // Assume the video URL is stored in `videoUrl` attribute
-              method: "GET",
-              responseType: "stream",
-            })
-                .then((response) => {
-                  return new Promise((resolve, reject) => {
-                    const file = bucket.file(destinationFileName);
-                    const writeStream = file.createWriteStream({
-                      metadata: {
-                        contentType: `video/${fileExtension}`,
-                      },
-                    });
+//             return axios({
+//               url: videoData.videoUrl, // Assume the video URL is stored in `videoUrl` attribute
+//               method: "GET",
+//               responseType: "stream",
+//             })
+//                 .then((response) => {
+//                   return new Promise((resolve, reject) => {
+//                     const file = bucket.file(destinationFileName);
+//                     const writeStream = file.createWriteStream({
+//                       metadata: {
+//                         contentType: `video/${fileExtension}`,
+//                       },
+//                     });
 
-                    response.data.pipe(writeStream);
+//                     response.data.pipe(writeStream);
 
 
-                    writeStream.on("finish", () => {
-                      console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
-                      doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
-                    });
+//                     writeStream.on("finish", () => {
+//                       console.log("Image downloaded and saved to Firebase Storage:", destinationFileName);
+//                       doc.ref.update({status: "success"}).then(resolve).catch(reject); // Changed from docRef to doc
+//                     });
 
-                    writeStream.on("error", (error) => {
-                      const errorMessage = "Error saving the Video to Firebase Storage: ";
-                      console.log(error);
-                      console.log(errorMessage);
-                      // Update status, errorMessage, and increment retryCount by 1
-                      doc.ref.update({
-                        status: "error",
-                        errorMessage: errorMessage,
-                        retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
-                      }).then(reject).catch(reject);
-                    });
-                  });
-                })
-                .catch((error) => {
-                  let errorMessage = "Unknown error occurred.";
+//                     writeStream.on("error", (error) => {
+//                       const errorMessage = "Error saving the Video to Firebase Storage: ";
+//                       console.log(error);
+//                       console.log(errorMessage);
+//                       // Update status, errorMessage, and increment retryCount by 1
+//                       doc.ref.update({
+//                         status: "error",
+//                         errorMessage: errorMessage,
+//                         retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+//                       }).then(reject).catch(reject);
+//                     });
+//                   });
+//                 })
+//                 .catch((error) => {
+//                   let errorMessage = "Unknown error occurred.";
 
-                  if (error.response) {
-                    if (error.response.status === 403) {
-                      errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
-                    } else {
-                      errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
-                    }
-                  } else if (error.message) {
-                    errorMessage = error.message;
-                  }
-                  console.log(errorMessage);
-                  doc.ref.update({
-                    status: "error",
-                    errorMessage: errorMessage,
-                    retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
-                  });
-                });
-          }));
-        });
+//                   if (error.response) {
+//                     if (error.response.status === 403) {
+//                       errorMessage = "HTTP 403 Forbidden error. Check your permissions or other server-side restrictions.";
+//                     } else {
+//                       errorMessage = `HTTP ${error.response.status} error: ${error.message}`;
+//                     }
+//                   } else if (error.message) {
+//                     errorMessage = error.message;
+//                   }
+//                   console.log(errorMessage);
+//                   doc.ref.update({
+//                     status: "error",
+//                     errorMessage: errorMessage,
+//                     retryCount: admin.firestore.FieldValue.increment(1), // Increment retryCount
+//                   });
+//                 });
+//           }));
+//         });
 
-        return Promise.all(retryPromises);
-      })
-      .catch((error) => {
-        console.error("Error in the videoJanitor function:", error);
-      });
-});
+//         return Promise.all(retryPromises);
+//       })
+//       .catch((error) => {
+//         console.error("Error in the videoJanitor function:", error);
+//       });
+// });
