@@ -6,7 +6,7 @@ This repository contains the backend code built on Firebase Functions and an Exp
 
 Before using the functions in this repository, make sure you have the following installed:
 
-1. Node.js and npm (Node Package Manager)
+1. Node.js and npm (Node Package Manager) **Important: Use Node 16 (e.g. through `nvm`) and install the latest version of firebase CLI.**
 2. Firebase CLI (Command Line Interface)
 
 ## Setup
@@ -44,6 +44,15 @@ firebase init
 ```bash
 firebase deploy --only functions
 ```
+
+## Firebase Setup
+* Enable Functions
+* Enable Firestore
+* Enable Storage
+* Add IAM rights for Firestore to Functions IAM User
+* Add First Project Document to Firestore (WIP Notebook)
+
+
 
 ## Functions
 
